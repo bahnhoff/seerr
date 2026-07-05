@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { before, beforeEach, describe, it, mock } from 'node:test';
 
+import TheMovieDb from '@server/api/themoviedb';
+import type { TmdbTvDetails } from '@server/api/themoviedb/interfaces';
 import {
   MediaRequestStatus,
   MediaStatus,
@@ -25,6 +27,63 @@ const sendNotificationMock = mock.method(
   'sendNotification',
   async () => undefined
 ).mock;
+
+// --- Mock TheMovieDb ---
+// `MediaRequest.request()` always fetches the TMDB show details for TV
+// requests, even when no `seasons` are requested (episode-only requests).
+function fakeTmdbTvShow(tmdbId: number): TmdbTvDetails {
+  return {
+    id: tmdbId,
+    content_ratings: { results: [] },
+    created_by: [],
+    episode_run_time: [],
+    first_air_date: '2024-01-01',
+    genres: [],
+    homepage: '',
+    in_production: false,
+    languages: ['en'],
+    last_air_date: '2024-01-01',
+    name: 'Test Show',
+    networks: [],
+    number_of_episodes: 10,
+    number_of_seasons: 1,
+    origin_country: ['US'],
+    original_language: 'en',
+    original_name: 'Test Show',
+    overview: '',
+    popularity: 0,
+    production_companies: [],
+    production_countries: [],
+    spoken_languages: [],
+    seasons: [
+      {
+        id: 1,
+        air_date: '2024-01-01',
+        episode_count: 10,
+        name: 'Season 1',
+        overview: '',
+        season_number: 1,
+      },
+    ],
+    status: 'Ended',
+    type: 'Scripted',
+    vote_average: 0,
+    vote_count: 0,
+    aggregate_credits: { cast: [] },
+    credits: { crew: [] },
+    external_ids: {},
+    keywords: { results: [] },
+    videos: { results: [] },
+  };
+}
+
+Object.defineProperty(TheMovieDb.prototype, 'getTvShow', {
+  get() {
+    return async ({ tvId }: { tvId: number }) => fakeTmdbTvShow(tvId);
+  },
+  set() {},
+  configurable: true,
+});
 
 let app: Express;
 
@@ -263,6 +322,31 @@ describe('POST /request/:requestId/retry', () => {
     assert.strictEqual(persisted.status, MediaRequestStatus.APPROVED);
     assert.strictEqual(persisted.modifiedBy?.email, 'admin@seerr.dev');
     assert.ok(persisted.updatedAt > failed.updatedAt);
+  });
+});
+
+describe('POST /request', () => {
+  it('creates episode-level season requests from body.episodes', async () => {
+    const agent = await loginAs('admin@seerr.dev', 'test1234');
+    const tmdbId = 70001;
+
+    const res = await agent
+      .post('/request')
+      .send({
+        mediaType: 'tv',
+        mediaId: tmdbId,
+        episodes: [{ seasonNumber: 1, episodes: [5] }],
+      })
+      .expect(201);
+
+    const created = await getRepository(MediaRequest).findOneOrFail({
+      where: { id: res.body.id },
+      relations: { seasons: { episodes: true } },
+    });
+    assert.equal(created.seasons.length, 1);
+    assert.equal(created.seasons[0].seasonNumber, 1);
+    assert.equal(created.seasons[0].episodes.length, 1);
+    assert.equal(created.seasons[0].episodes[0].episodeNumber, 5);
   });
 });
 

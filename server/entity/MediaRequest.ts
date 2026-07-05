@@ -28,6 +28,7 @@ import {
   RelationCount,
   UpdateDateColumn,
 } from 'typeorm';
+import EpisodeRequest from './EpisodeRequest';
 import Media from './Media';
 import SeasonRequest from './SeasonRequest';
 import { User } from './User';
@@ -398,7 +399,7 @@ export class MediaRequest {
           ? tmdbMediaShow.seasons
               .filter((season) => season.season_number !== 0)
               .map((season) => season.season_number)
-          : (requestBody.seasons as number[]);
+          : ((requestBody.seasons as number[]) ?? []);
       if (!settings.main.enableSpecialEpisodes) {
         requestedSeasons = requestedSeasons.filter((sn) => sn > 0);
       }
@@ -445,7 +446,51 @@ export class MediaRequest {
         (rs) => !existingSeasons.includes(rs)
       );
 
-      if (finalSeasons.length === 0) {
+      // Episode-level requests (parallel to whole-season `seasons`).
+      const episodeSeasonRequests = (requestBody.episodes ?? [])
+        .filter((sel) => sel.episodes.length > 0)
+        .map(
+          (sel) =>
+            new SeasonRequest({
+              seasonNumber: sel.seasonNumber,
+              status: user.hasPermission(
+                [
+                  requestBody.is4k
+                    ? Permission.AUTO_APPROVE_4K
+                    : Permission.AUTO_APPROVE,
+                  requestBody.is4k
+                    ? Permission.AUTO_APPROVE_4K_TV
+                    : Permission.AUTO_APPROVE_TV,
+                  Permission.MANAGE_REQUESTS,
+                ],
+                { type: 'or' }
+              )
+                ? MediaRequestStatus.APPROVED
+                : MediaRequestStatus.PENDING,
+              episodes: sel.episodes.map(
+                (episodeNumber) =>
+                  new EpisodeRequest({
+                    episodeNumber,
+                    status: user.hasPermission(
+                      [
+                        requestBody.is4k
+                          ? Permission.AUTO_APPROVE_4K
+                          : Permission.AUTO_APPROVE,
+                        requestBody.is4k
+                          ? Permission.AUTO_APPROVE_4K_TV
+                          : Permission.AUTO_APPROVE_TV,
+                        Permission.MANAGE_REQUESTS,
+                      ],
+                      { type: 'or' }
+                    )
+                      ? MediaRequestStatus.APPROVED
+                      : MediaRequestStatus.PENDING,
+                  })
+              ),
+            })
+        );
+
+      if (finalSeasons.length === 0 && episodeSeasonRequests.length === 0) {
         throw new NoSeasonsAvailableError('No seasons available to request');
       } else if (
         quotas.tv.limit &&
@@ -495,26 +540,29 @@ export class MediaRequest {
         rootFolder: rootFolder,
         languageProfileId: requestBody.languageProfileId,
         tags: tags,
-        seasons: finalSeasons.map(
-          (sn) =>
-            new SeasonRequest({
-              seasonNumber: sn,
-              status: user.hasPermission(
-                [
-                  requestBody.is4k
-                    ? Permission.AUTO_APPROVE_4K
-                    : Permission.AUTO_APPROVE,
-                  requestBody.is4k
-                    ? Permission.AUTO_APPROVE_4K_TV
-                    : Permission.AUTO_APPROVE_TV,
-                  Permission.MANAGE_REQUESTS,
-                ],
-                { type: 'or' }
-              )
-                ? MediaRequestStatus.APPROVED
-                : MediaRequestStatus.PENDING,
-            })
-        ),
+        seasons: [
+          ...finalSeasons.map(
+            (sn) =>
+              new SeasonRequest({
+                seasonNumber: sn,
+                status: user.hasPermission(
+                  [
+                    requestBody.is4k
+                      ? Permission.AUTO_APPROVE_4K
+                      : Permission.AUTO_APPROVE,
+                    requestBody.is4k
+                      ? Permission.AUTO_APPROVE_4K_TV
+                      : Permission.AUTO_APPROVE_TV,
+                    Permission.MANAGE_REQUESTS,
+                  ],
+                  { type: 'or' }
+                )
+                  ? MediaRequestStatus.APPROVED
+                  : MediaRequestStatus.PENDING,
+              })
+          ),
+          ...episodeSeasonRequests,
+        ],
         isAutoRequest: options.isAutoRequest ?? false,
       });
 
