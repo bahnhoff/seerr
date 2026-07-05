@@ -5,35 +5,27 @@ import {
   Entity,
   Index,
   ManyToOne,
-  OneToMany,
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
-import EpisodeRequest from './EpisodeRequest';
-import { MediaRequest } from './MediaRequest';
+import SeasonRequest from './SeasonRequest';
 
 @Entity()
-class SeasonRequest {
+class EpisodeRequest {
   @PrimaryGeneratedColumn()
   public id: number;
 
   @Column()
-  public seasonNumber: number;
+  public episodeNumber: number;
 
   @Column({ type: 'int', default: MediaRequestStatus.PENDING })
   public status: MediaRequestStatus;
 
-  @OneToMany(() => EpisodeRequest, (episode) => episode.seasonRequest, {
-    eager: true,
-    cascade: true,
-  })
-  public episodes: EpisodeRequest[];
-
-  @ManyToOne(() => MediaRequest, (request) => request.seasons, {
+  @ManyToOne(() => SeasonRequest, (seasonRequest) => seasonRequest.episodes, {
     onDelete: 'CASCADE',
   })
   @Index()
-  public request: MediaRequest;
+  public seasonRequest: SeasonRequest;
 
   @DbAwareColumn({ type: 'datetime', default: () => 'CURRENT_TIMESTAMP' })
   public createdAt: Date;
@@ -44,9 +36,9 @@ class SeasonRequest {
   })
   public updatedAt: Date;
 
-  constructor(init?: Partial<SeasonRequest>) {
+  constructor(init?: Partial<EpisodeRequest>) {
     Object.assign(this, init);
   }
 }
 
-export default SeasonRequest;
+export default EpisodeRequest;
