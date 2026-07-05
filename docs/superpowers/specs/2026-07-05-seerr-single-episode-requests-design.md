@@ -44,7 +44,7 @@ Seerr is a monorepo: Next.js frontend (`src/`) + Node/Express/TypeORM backend
 | Data model | `server/entity/EpisodeRequest.ts` (**new**) | `{ id, episodeNumber, status, seasonRequest FK }` |
 | Migration | `server/migration/**` (**new**) | Create `episode_request` table only — no change to existing rows |
 | API | `server/routes/request.ts` (+ `request.test.ts`) | Accept optional per-season `episodes: number[]`; backward-compatible |
-| Backend sync | `server/entity/MediaRequest.ts` `sendToSonarr()` | When a season request carries specific episodes, drive episode-level monitor + search |
+| Backend sync | `server/subscriber/MediaRequestSubscriber.ts` `sendToSonarr()` (lines ~477–760; `AddSeriesOptions` built ~703–716) | When a season request carries specific episodes, drive episode-level monitor + search |
 | Sonarr client | `server/api/servarr/sonarr.ts` | **Reuse** existing `getEpisodes()` / `monitorEpisodes()`; add `searchEpisodes(episodeIds)` (`EpisodeSearch` command) if not already present |
 | Frontend | `src/components/RequestModal/TvRequestModal.tsx` | Per-season expander with episode checkboxes; lazy-fetch season detail |
 
