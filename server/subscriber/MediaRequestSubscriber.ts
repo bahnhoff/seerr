@@ -17,6 +17,7 @@ import Media from '@server/entity/Media';
 import { MediaRequest } from '@server/entity/MediaRequest';
 import Season from '@server/entity/Season';
 import SeasonRequest from '@server/entity/SeasonRequest';
+import { splitSeasonRequests } from '@server/lib/episodeRequests';
 import notificationManager, { Notification } from '@server/lib/notifications';
 import { getSettings } from '@server/lib/settings';
 import logger from '@server/logger';
@@ -700,13 +701,17 @@ export class MediaRequestSubscriber implements EntitySubscriberInterface<MediaRe
           }
         }
 
+        const { fullSeasonNumbers, episodeTargets } = splitSeasonRequests(
+          entity.seasons
+        );
+
         const sonarrSeriesOptions: AddSeriesOptions = {
           profileId: qualityProfile,
           languageProfileId: languageProfile,
           rootFolderPath: rootFolder,
           title: series.name,
           tvdbid: tvdbId,
-          seasons: entity.seasons.map((season) => season.seasonNumber),
+          seasons: fullSeasonNumbers,
           seasonFolder: sonarrSettings.enableSeasonFolders,
           seriesType,
           tags,
@@ -736,6 +741,18 @@ export class MediaRequestSubscriber implements EntitySubscriberInterface<MediaRe
             media[entity.is4k ? 'serviceId4k' : 'serviceId'] =
               sonarrSettings?.id;
             await mediaRepository.save(media);
+
+            if (episodeTargets.length > 0 && sonarrSeries.id) {
+              sonarr
+                .monitorAndSearchEpisodes(sonarrSeries.id, episodeTargets)
+                .catch((e) => {
+                  logger.error('Failed to monitor/search requested episodes', {
+                    label: 'Sonarr',
+                    errorMessage: e.message,
+                    mediaId: entity.media.id,
+                  });
+                });
+            }
           })
           .catch(async () => {
             try {
