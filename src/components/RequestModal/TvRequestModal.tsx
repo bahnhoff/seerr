@@ -5,11 +5,13 @@ import type { RequestOverrides } from '@app/components/RequestModal/AdvancedRequ
 import AdvancedRequester from '@app/components/RequestModal/AdvancedRequester';
 import QuotaDisplay from '@app/components/RequestModal/QuotaDisplay';
 import SearchByNameModal from '@app/components/RequestModal/SearchByNameModal';
+import SeasonEpisodes from '@app/components/RequestModal/SeasonEpisodes';
 import useSettings from '@app/hooks/useSettings';
 import useToasts from '@app/hooks/useToasts';
 import { useUser } from '@app/hooks/useUser';
 import globalMessages from '@app/i18n/globalMessages';
 import defineMessages from '@app/utils/defineMessages';
+import { ChevronDownIcon, ChevronUpIcon } from '@heroicons/react/24/solid';
 import { ANIME_KEYWORD_ID } from '@server/api/themoviedb/constants';
 import { MediaRequestStatus, MediaStatus } from '@server/constants/media';
 import type { MediaRequest } from '@server/entity/MediaRequest';
@@ -19,7 +21,7 @@ import type { QuotaResponse } from '@server/interfaces/api/userInterfaces';
 import { Permission } from '@server/lib/permissions';
 import type { TvDetails } from '@server/models/Tv';
 import axios from 'axios';
-import { useState } from 'react';
+import { Fragment, useState } from 'react';
 import { useIntl } from 'react-intl';
 import useSWR, { mutate } from 'swr';
 
@@ -80,6 +82,10 @@ const TvRequestModal = ({
   const [selectedSeasons, setSelectedSeasons] = useState<number[]>(
     editRequest ? editingSeasons : []
   );
+  const [expandedSeasons, setExpandedSeasons] = useState<number[]>([]);
+  const [selectedEpisodes, setSelectedEpisodes] = useState<
+    Record<number, number[]>
+  >({});
   const intl = useIntl();
   const { user, hasPermission } = useUser();
   const [searchModal, setSearchModal] = useState<{
@@ -194,16 +200,30 @@ const TvRequestModal = ({
           tags: requestOverrides.tags,
         };
       }
+
+      const episodeSelections = Object.entries(selectedEpisodes)
+        .map(([seasonNumber, episodes]) => ({
+          seasonNumber: Number(seasonNumber),
+          episodes,
+        }))
+        .filter((sel) => sel.episodes.length > 0);
+
+      const partialSeasonNumbers = episodeSelections.map(
+        (sel) => sel.seasonNumber
+      );
+
       const response = await axios.post<MediaRequest>('/api/v1/request', {
         mediaId: data?.id,
         tvdbId: tvdbId ?? data?.externalIds.tvdbId,
         mediaType: 'tv',
         is4k,
-        seasons: settings.currentSettings.partialRequestsEnabled
+        seasons: (settings.currentSettings.partialRequestsEnabled
           ? selectedSeasons.sort((a, b) => a - b)
           : getAllSeasons().filter(
               (season) => !getAllRequestedSeasons().includes(season)
-            ),
+            )
+        ).filter((season) => !partialSeasonNumbers.includes(season)),
+        episodes: episodeSelections,
         ...overrideParams,
       });
       mutate('/api/v1/request?filter=all&take=10&sort=modified&skip=0');
@@ -300,6 +320,24 @@ const TvRequestModal = ({
     } else {
       setSelectedSeasons((seasons) => [...seasons, seasonNumber]);
     }
+  };
+
+  const toggleSeasonExpanded = (seasonNumber: number): void => {
+    setExpandedSeasons((seasons) =>
+      seasons.includes(seasonNumber)
+        ? seasons.filter((sn) => sn !== seasonNumber)
+        : [...seasons, seasonNumber]
+    );
+  };
+
+  const toggleEpisode = (seasonNumber: number, episodeNumber: number): void => {
+    setSelectedEpisodes((prev) => {
+      const current = prev[seasonNumber] ?? [];
+      const next = current.includes(episodeNumber)
+        ? current.filter((n) => n !== episodeNumber)
+        : [...current, episodeNumber];
+      return { ...prev, [seasonNumber]: next };
+    });
   };
 
   const unrequestedSeasons = getAllSeasons().filter(
@@ -591,119 +629,181 @@ const TvRequestModal = ({
                             MediaStatus.DELETED
                       );
                       return (
-                        <tr key={`season-${season.id}`}>
-                          <td
-                            className={`whitespace-nowrap px-4 py-4 text-sm font-medium leading-5 text-gray-100 ${
-                              !settings.currentSettings
-                                .partialRequestsEnabled && 'hidden'
-                            }`}
-                          >
-                            <span
-                              role="checkbox"
-                              tabIndex={0}
-                              aria-checked={
-                                !!mediaSeason ||
-                                (!!seasonRequest &&
-                                  !editingSeasons.includes(
-                                    season.seasonNumber
-                                  )) ||
-                                isSelectedSeason(season.seasonNumber)
-                              }
-                              onClick={() => toggleSeason(season.seasonNumber)}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter' || e.key === 'Space') {
-                                  toggleSeason(season.seasonNumber);
-                                }
-                              }}
-                              className={`relative inline-flex h-5 w-10 flex-shrink-0 cursor-pointer items-center justify-center pt-2 focus:outline-none ${
-                                mediaSeason ||
-                                (quota?.tv.limit &&
-                                  currentlyRemaining <= 0 &&
-                                  !isSelectedSeason(season.seasonNumber)) ||
-                                (!!seasonRequest &&
-                                  !editingSeasons.includes(season.seasonNumber))
-                                  ? 'opacity-50'
-                                  : ''
+                        <Fragment key={`season-${season.id}`}>
+                          <tr>
+                            <td
+                              className={`whitespace-nowrap px-4 py-4 text-sm font-medium leading-5 text-gray-100 ${
+                                !settings.currentSettings
+                                  .partialRequestsEnabled && 'hidden'
                               }`}
                             >
                               <span
-                                aria-hidden="true"
-                                className={`${
+                                role="checkbox"
+                                tabIndex={0}
+                                aria-checked={
                                   !!mediaSeason ||
                                   (!!seasonRequest &&
                                     !editingSeasons.includes(
                                       season.seasonNumber
                                     )) ||
                                   isSelectedSeason(season.seasonNumber)
-                                    ? 'bg-indigo-500'
-                                    : 'bg-gray-700'
-                                } absolute mx-auto h-4 w-9 rounded-full transition-colors duration-200 ease-in-out`}
-                              />
-                              <span
-                                aria-hidden="true"
-                                className={`${
-                                  !!mediaSeason ||
+                                }
+                                onClick={() =>
+                                  toggleSeason(season.seasonNumber)
+                                }
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter' || e.key === 'Space') {
+                                    toggleSeason(season.seasonNumber);
+                                  }
+                                }}
+                                className={`relative inline-flex h-5 w-10 flex-shrink-0 cursor-pointer items-center justify-center pt-2 focus:outline-none ${
+                                  mediaSeason ||
+                                  (quota?.tv.limit &&
+                                    currentlyRemaining <= 0 &&
+                                    !isSelectedSeason(season.seasonNumber)) ||
                                   (!!seasonRequest &&
                                     !editingSeasons.includes(
                                       season.seasonNumber
-                                    )) ||
-                                  isSelectedSeason(season.seasonNumber)
-                                    ? 'translate-x-5'
-                                    : 'translate-x-0'
-                                } absolute left-0 inline-block h-5 w-5 rounded-full border border-gray-200 bg-white shadow transition-transform duration-200 ease-in-out group-focus:border-blue-300 group-focus:ring`}
-                              />
-                            </span>
-                          </td>
-                          <td className="whitespace-nowrap px-1 py-4 text-sm font-medium leading-5 text-gray-100 md:px-6">
-                            {season.seasonNumber === 0
-                              ? intl.formatMessage(globalMessages.specials)
-                              : intl.formatMessage(messages.seasonnumber, {
-                                  number: season.seasonNumber,
-                                })}
-                          </td>
-                          <td className="whitespace-nowrap px-5 py-4 text-sm leading-5 text-gray-200 md:px-6">
-                            {season.episodeCount}
-                          </td>
-                          <td className="whitespace-nowrap py-4 pr-2 text-sm leading-5 text-gray-200 md:px-6">
-                            {!seasonRequest && !mediaSeason && (
-                              <Badge>
-                                {intl.formatMessage(
-                                  globalMessages.notrequested
-                                )}
-                              </Badge>
-                            )}
-                            {!mediaSeason &&
-                              seasonRequest?.status ===
-                                MediaRequestStatus.PENDING && (
-                                <Badge badgeType="warning">
-                                  {intl.formatMessage(globalMessages.pending)}
+                                    ))
+                                    ? 'opacity-50'
+                                    : ''
+                                }`}
+                              >
+                                <span
+                                  aria-hidden="true"
+                                  className={`${
+                                    !!mediaSeason ||
+                                    (!!seasonRequest &&
+                                      !editingSeasons.includes(
+                                        season.seasonNumber
+                                      )) ||
+                                    isSelectedSeason(season.seasonNumber)
+                                      ? 'bg-indigo-500'
+                                      : 'bg-gray-700'
+                                  } absolute mx-auto h-4 w-9 rounded-full transition-colors duration-200 ease-in-out`}
+                                />
+                                <span
+                                  aria-hidden="true"
+                                  className={`${
+                                    !!mediaSeason ||
+                                    (!!seasonRequest &&
+                                      !editingSeasons.includes(
+                                        season.seasonNumber
+                                      )) ||
+                                    isSelectedSeason(season.seasonNumber)
+                                      ? 'translate-x-5'
+                                      : 'translate-x-0'
+                                  } absolute left-0 inline-block h-5 w-5 rounded-full border border-gray-200 bg-white shadow transition-transform duration-200 ease-in-out group-focus:border-blue-300 group-focus:ring`}
+                                />
+                              </span>
+                            </td>
+                            <td className="whitespace-nowrap px-1 py-4 text-sm font-medium leading-5 text-gray-100 md:px-6">
+                              <div className="flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  className="flex-shrink-0 text-gray-400 hover:text-white"
+                                  onClick={() =>
+                                    toggleSeasonExpanded(season.seasonNumber)
+                                  }
+                                  aria-expanded={expandedSeasons.includes(
+                                    season.seasonNumber
+                                  )}
+                                  aria-label={
+                                    season.seasonNumber === 0
+                                      ? intl.formatMessage(
+                                          globalMessages.specials
+                                        )
+                                      : intl.formatMessage(
+                                          messages.seasonnumber,
+                                          { number: season.seasonNumber }
+                                        )
+                                  }
+                                >
+                                  {expandedSeasons.includes(
+                                    season.seasonNumber
+                                  ) ? (
+                                    <ChevronUpIcon className="h-4 w-4" />
+                                  ) : (
+                                    <ChevronDownIcon className="h-4 w-4" />
+                                  )}
+                                </button>
+                                <span>
+                                  {season.seasonNumber === 0
+                                    ? intl.formatMessage(
+                                        globalMessages.specials
+                                      )
+                                    : intl.formatMessage(
+                                        messages.seasonnumber,
+                                        {
+                                          number: season.seasonNumber,
+                                        }
+                                      )}
+                                </span>
+                              </div>
+                            </td>
+                            <td className="whitespace-nowrap px-5 py-4 text-sm leading-5 text-gray-200 md:px-6">
+                              {season.episodeCount}
+                            </td>
+                            <td className="whitespace-nowrap py-4 pr-2 text-sm leading-5 text-gray-200 md:px-6">
+                              {!seasonRequest && !mediaSeason && (
+                                <Badge>
+                                  {intl.formatMessage(
+                                    globalMessages.notrequested
+                                  )}
                                 </Badge>
                               )}
-                            {((!mediaSeason &&
-                              seasonRequest?.status ===
-                                MediaRequestStatus.APPROVED) ||
-                              mediaSeason?.[is4k ? 'status4k' : 'status'] ===
-                                MediaStatus.PROCESSING) && (
-                              <Badge badgeType="primary">
-                                {intl.formatMessage(globalMessages.requested)}
-                              </Badge>
-                            )}
-                            {mediaSeason?.[is4k ? 'status4k' : 'status'] ===
-                              MediaStatus.PARTIALLY_AVAILABLE && (
-                              <Badge badgeType="success">
-                                {intl.formatMessage(
-                                  globalMessages.partiallyavailable
+                              {!mediaSeason &&
+                                seasonRequest?.status ===
+                                  MediaRequestStatus.PENDING && (
+                                  <Badge badgeType="warning">
+                                    {intl.formatMessage(globalMessages.pending)}
+                                  </Badge>
                                 )}
-                              </Badge>
-                            )}
-                            {mediaSeason?.[is4k ? 'status4k' : 'status'] ===
-                              MediaStatus.AVAILABLE && (
-                              <Badge badgeType="success">
-                                {intl.formatMessage(globalMessages.available)}
-                              </Badge>
-                            )}
-                          </td>
-                        </tr>
+                              {((!mediaSeason &&
+                                seasonRequest?.status ===
+                                  MediaRequestStatus.APPROVED) ||
+                                mediaSeason?.[is4k ? 'status4k' : 'status'] ===
+                                  MediaStatus.PROCESSING) && (
+                                <Badge badgeType="primary">
+                                  {intl.formatMessage(globalMessages.requested)}
+                                </Badge>
+                              )}
+                              {mediaSeason?.[is4k ? 'status4k' : 'status'] ===
+                                MediaStatus.PARTIALLY_AVAILABLE && (
+                                <Badge badgeType="success">
+                                  {intl.formatMessage(
+                                    globalMessages.partiallyavailable
+                                  )}
+                                </Badge>
+                              )}
+                              {mediaSeason?.[is4k ? 'status4k' : 'status'] ===
+                                MediaStatus.AVAILABLE && (
+                                <Badge badgeType="success">
+                                  {intl.formatMessage(globalMessages.available)}
+                                </Badge>
+                              )}
+                            </td>
+                          </tr>
+                          {expandedSeasons.includes(season.seasonNumber) && (
+                            <tr>
+                              <td colSpan={4} className="bg-gray-800/50">
+                                <SeasonEpisodes
+                                  tmdbId={tmdbId ?? (data?.id as number)}
+                                  seasonNumber={season.seasonNumber}
+                                  selected={
+                                    selectedEpisodes[season.seasonNumber] ?? []
+                                  }
+                                  onToggle={(episodeNumber) =>
+                                    toggleEpisode(
+                                      season.seasonNumber,
+                                      episodeNumber
+                                    )
+                                  }
+                                />
+                              </td>
+                            </tr>
+                          )}
+                        </Fragment>
                       );
                     })}
                 </tbody>
