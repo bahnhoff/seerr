@@ -447,8 +447,15 @@ export class MediaRequest {
       );
 
       // Episode-level requests (parallel to whole-season `seasons`).
+      // Mirror the whole-season handling above: drop specials when they're
+      // disabled, and don't create an episode-partial season request for a
+      // season that's already fully requested/available (`existingSeasons`).
       const episodeSeasonRequests = (requestBody.episodes ?? [])
         .filter((sel) => sel.episodes.length > 0)
+        .filter(
+          (sel) => settings.main.enableSpecialEpisodes || sel.seasonNumber > 0
+        )
+        .filter((sel) => !existingSeasons.includes(sel.seasonNumber))
         .map(
           (sel) =>
             new SeasonRequest({
@@ -494,7 +501,10 @@ export class MediaRequest {
         throw new NoSeasonsAvailableError('No seasons available to request');
       } else if (
         quotas.tv.limit &&
-        finalSeasons.length > (quotas.tv.remaining ?? 0)
+        // Each episode-partial season counts as one request, same as a
+        // whole-season request, for quota purposes.
+        finalSeasons.length + episodeSeasonRequests.length >
+          (quotas.tv.remaining ?? 0)
       ) {
         throw new QuotaRestrictedError('Series Quota exceeded.');
       }

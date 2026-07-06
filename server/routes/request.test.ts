@@ -11,6 +11,7 @@ import {
 import { getRepository } from '@server/datasource';
 import Media from '@server/entity/Media';
 import { MediaRequest } from '@server/entity/MediaRequest';
+import SeasonRequest from '@server/entity/SeasonRequest';
 import { User } from '@server/entity/User';
 import { getSettings } from '@server/lib/settings';
 import { checkUser } from '@server/middleware/auth';
@@ -347,6 +348,80 @@ describe('POST /request', () => {
     assert.equal(created.seasons[0].seasonNumber, 1);
     assert.equal(created.seasons[0].episodes.length, 1);
     assert.equal(created.seasons[0].episodes[0].episodeNumber, 5);
+  });
+
+  it('skips an episode-partial season that is already fully requested', async () => {
+    const userRepo = getRepository(User);
+    const mediaRepo = getRepository(Media);
+    const requestRepo = getRepository(MediaRequest);
+    const seasonRequestRepo = getRepository(SeasonRequest);
+
+    const admin = await userRepo.findOneOrFail({
+      where: { email: 'admin@seerr.dev' },
+    });
+    const tmdbId = 70002;
+
+    const media = await mediaRepo.save(
+      new Media({
+        mediaType: MediaType.TV,
+        tmdbId,
+        status: MediaStatus.PENDING,
+        status4k: MediaStatus.UNKNOWN,
+      })
+    );
+
+    // Season 1 is already fully (whole-season) requested for this media.
+    await requestRepo.save(
+      new MediaRequest({
+        type: MediaType.TV,
+        status: MediaRequestStatus.PENDING,
+        media,
+        requestedBy: admin,
+        is4k: false,
+        seasons: [
+          new SeasonRequest({
+            seasonNumber: 1,
+            status: MediaRequestStatus.PENDING,
+          }),
+        ],
+      })
+    );
+
+    const agent = await loginAs('admin@seerr.dev', 'test1234');
+
+    // Request episodes for the already-requested season 1 AND a fresh
+    // season 2 in the same call.
+    const res = await agent
+      .post('/request')
+      .send({
+        mediaType: 'tv',
+        mediaId: tmdbId,
+        is4k: false,
+        episodes: [
+          { seasonNumber: 1, episodes: [5] },
+          { seasonNumber: 2, episodes: [1] },
+        ],
+      })
+      .expect(201);
+
+    const created = await requestRepo.findOneOrFail({
+      where: { id: res.body.id },
+      relations: { seasons: { episodes: true } },
+    });
+
+    // Only season 2 gets an episode-partial SeasonRequest; season 1 is
+    // skipped because it's already fully requested.
+    assert.equal(created.seasons.length, 1);
+    assert.equal(created.seasons[0].seasonNumber, 2);
+
+    // No duplicate SeasonRequest row was created for season 1 - only the
+    // original whole-season row exists for it, across all requests on this
+    // media.
+    const seasonOneRows = await seasonRequestRepo.find({
+      where: { seasonNumber: 1, request: { media: { id: media.id } } },
+      relations: { request: true },
+    });
+    assert.equal(seasonOneRows.length, 1);
   });
 });
 
