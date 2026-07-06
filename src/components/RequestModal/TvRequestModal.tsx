@@ -101,9 +101,26 @@ const TvRequestModal = ({
       : null
   );
 
+  const hasEpisodeSelections = Object.values(selectedEpisodes).some(
+    (eps) => eps.length > 0
+  );
+
+  // Episode selection is only available when creating a new request: the
+  // edit/PUT path is whole-season-only (v1), and per-episode partial
+  // requests are themselves gated behind partialRequestsEnabled.
+  const showEpisodePicker =
+    settings.currentSettings.partialRequestsEnabled && !editRequest;
+
+  // Seasons with an episode-only selection count as one request each (same
+  // as a whole-season selection), for quota purposes.
+  const episodeOnlySeasonCount = Object.values(selectedEpisodes).filter(
+    (eps) => eps.length > 0
+  ).length;
+
   const currentlyRemaining =
     (quota?.tv.remaining ?? 0) -
-    selectedSeasons.length +
+    selectedSeasons.length -
+    episodeOnlySeasonCount +
     (editRequest?.seasons ?? []).length;
 
   const updateRequest = async (alsoApproveRequest = false) => {
@@ -178,7 +195,8 @@ const TvRequestModal = ({
   const sendRequest = async () => {
     if (
       settings.currentSettings.partialRequestsEnabled &&
-      selectedSeasons.length === 0
+      selectedSeasons.length === 0 &&
+      !hasEpisodeSelections
     ) {
       return;
     }
@@ -462,7 +480,11 @@ const TvRequestModal = ({
                   is4k ? globalMessages.request4k : globalMessages.request
                 )
               : selectedSeasons.length === 0
-                ? intl.formatMessage(messages.selectseason)
+                ? hasEpisodeSelections
+                  ? intl.formatMessage(
+                      is4k ? globalMessages.request4k : globalMessages.request
+                    )
+                  : intl.formatMessage(messages.selectseason)
                 : intl.formatMessage(
                     is4k ? messages.requestseasons4k : messages.requestseasons,
                     {
@@ -479,7 +501,8 @@ const TvRequestModal = ({
             ? true
             : getAllRequestedSeasons().length >= getAllSeasons().length ||
               (settings.currentSettings.partialRequestsEnabled &&
-                selectedSeasons.length === 0)
+                selectedSeasons.length === 0 &&
+                !hasEpisodeSelections)
       }
       okButtonType={
         editRequest
@@ -699,34 +722,36 @@ const TvRequestModal = ({
                             </td>
                             <td className="whitespace-nowrap px-1 py-4 text-sm font-medium leading-5 text-gray-100 md:px-6">
                               <div className="flex items-center gap-1">
-                                <button
-                                  type="button"
-                                  className="flex-shrink-0 text-gray-400 hover:text-white"
-                                  onClick={() =>
-                                    toggleSeasonExpanded(season.seasonNumber)
-                                  }
-                                  aria-expanded={expandedSeasons.includes(
-                                    season.seasonNumber
-                                  )}
-                                  aria-label={
-                                    season.seasonNumber === 0
-                                      ? intl.formatMessage(
-                                          globalMessages.specials
-                                        )
-                                      : intl.formatMessage(
-                                          messages.seasonnumber,
-                                          { number: season.seasonNumber }
-                                        )
-                                  }
-                                >
-                                  {expandedSeasons.includes(
-                                    season.seasonNumber
-                                  ) ? (
-                                    <ChevronUpIcon className="h-4 w-4" />
-                                  ) : (
-                                    <ChevronDownIcon className="h-4 w-4" />
-                                  )}
-                                </button>
+                                {showEpisodePicker && (
+                                  <button
+                                    type="button"
+                                    className="flex-shrink-0 text-gray-400 hover:text-white"
+                                    onClick={() =>
+                                      toggleSeasonExpanded(season.seasonNumber)
+                                    }
+                                    aria-expanded={expandedSeasons.includes(
+                                      season.seasonNumber
+                                    )}
+                                    aria-label={
+                                      season.seasonNumber === 0
+                                        ? intl.formatMessage(
+                                            globalMessages.specials
+                                          )
+                                        : intl.formatMessage(
+                                            messages.seasonnumber,
+                                            { number: season.seasonNumber }
+                                          )
+                                    }
+                                  >
+                                    {expandedSeasons.includes(
+                                      season.seasonNumber
+                                    ) ? (
+                                      <ChevronUpIcon className="h-4 w-4" />
+                                    ) : (
+                                      <ChevronDownIcon className="h-4 w-4" />
+                                    )}
+                                  </button>
+                                )}
                                 <span>
                                   {season.seasonNumber === 0
                                     ? intl.formatMessage(
@@ -784,25 +809,27 @@ const TvRequestModal = ({
                               )}
                             </td>
                           </tr>
-                          {expandedSeasons.includes(season.seasonNumber) && (
-                            <tr>
-                              <td colSpan={4} className="bg-gray-800/50">
-                                <SeasonEpisodes
-                                  tmdbId={tmdbId ?? (data?.id as number)}
-                                  seasonNumber={season.seasonNumber}
-                                  selected={
-                                    selectedEpisodes[season.seasonNumber] ?? []
-                                  }
-                                  onToggle={(episodeNumber) =>
-                                    toggleEpisode(
-                                      season.seasonNumber,
-                                      episodeNumber
-                                    )
-                                  }
-                                />
-                              </td>
-                            </tr>
-                          )}
+                          {showEpisodePicker &&
+                            expandedSeasons.includes(season.seasonNumber) && (
+                              <tr>
+                                <td colSpan={4} className="bg-gray-800/50">
+                                  <SeasonEpisodes
+                                    tmdbId={tmdbId ?? (data?.id as number)}
+                                    seasonNumber={season.seasonNumber}
+                                    selected={
+                                      selectedEpisodes[season.seasonNumber] ??
+                                      []
+                                    }
+                                    onToggle={(episodeNumber) =>
+                                      toggleEpisode(
+                                        season.seasonNumber,
+                                        episodeNumber
+                                      )
+                                    }
+                                  />
+                                </td>
+                              </tr>
+                            )}
                         </Fragment>
                       );
                     })}
