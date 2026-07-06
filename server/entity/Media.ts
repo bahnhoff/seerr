@@ -71,7 +71,12 @@ class Media {
     try {
       const media = await mediaRepository.findOne({
         where: { tmdbId: id, mediaType: mediaType },
-        relations: { requests: true, issues: true },
+        // `seasons` and `episodes` are `eager: true`, but TypeORM does not
+        // reliably cascade eager relations three levels deep
+        // (media -> requests -> seasons -> episodes), so request the episode
+        // requests explicitly. The frontend needs them to detect seasons that
+        // are only partially (episode-level) requested.
+        relations: { requests: { seasons: { episodes: true } }, issues: true },
       });
 
       return media ?? undefined;
