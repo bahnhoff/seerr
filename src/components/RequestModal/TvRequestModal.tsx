@@ -105,6 +105,34 @@ const TvRequestModal = ({
     (eps) => eps.length > 0
   );
 
+  // Episode numbers already requested per season, from active (non-declined,
+  // non-completed) requests. Used to show those episodes as checked+disabled so
+  // the user can add further episodes to a partially-requested season.
+  const requestedEpisodesBySeason = (data?.mediaInfo?.requests ?? [])
+    .filter(
+      (request) =>
+        request.is4k === is4k &&
+        request.status !== MediaRequestStatus.DECLINED &&
+        request.status !== MediaRequestStatus.COMPLETED
+    )
+    .reduce(
+      (acc, request) => {
+        request.seasons.forEach((seasonRequest) => {
+          const episodeNumbers = (seasonRequest.episodes ?? []).map(
+            (episode) => episode.episodeNumber
+          );
+          if (episodeNumbers.length > 0) {
+            acc[seasonRequest.seasonNumber] = [
+              ...(acc[seasonRequest.seasonNumber] ?? []),
+              ...episodeNumbers,
+            ];
+          }
+        });
+        return acc;
+      },
+      {} as Record<number, number[]>
+    );
+
   // Episode selection is only available when creating a new request: the
   // edit/PUT path is whole-season-only (v1), and per-episode partial
   // requests are themselves gated behind partialRequestsEnabled.
@@ -473,7 +501,8 @@ const TvRequestModal = ({
             : hasPermission(Permission.MANAGE_REQUESTS)
               ? intl.formatMessage(messages.approve)
               : intl.formatMessage(messages.edit)
-          : getAllRequestedSeasons().length >= getAllSeasons().length
+          : getAllRequestedSeasons().length >= getAllSeasons().length &&
+              !hasEpisodeSelections
             ? intl.formatMessage(messages.alreadyrequested)
             : !settings.currentSettings.partialRequestsEnabled
               ? intl.formatMessage(
@@ -499,7 +528,8 @@ const TvRequestModal = ({
               quota?.tv.limit &&
               unrequestedSeasons.length > quota.tv.limit
             ? true
-            : getAllRequestedSeasons().length >= getAllSeasons().length ||
+            : (getAllRequestedSeasons().length >= getAllSeasons().length &&
+                !hasEpisodeSelections) ||
               (settings.currentSettings.partialRequestsEnabled &&
                 selectedSeasons.length === 0 &&
                 !hasEpisodeSelections)
@@ -819,6 +849,11 @@ const TvRequestModal = ({
                                     selected={
                                       selectedEpisodes[season.seasonNumber] ??
                                       []
+                                    }
+                                    requested={
+                                      requestedEpisodesBySeason[
+                                        season.seasonNumber
+                                      ] ?? []
                                     }
                                     onToggle={(episodeNumber) =>
                                       toggleEpisode(

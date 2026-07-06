@@ -7,12 +7,14 @@ import useSWR from 'swr';
 const messages = defineMessages('components.RequestModal.SeasonEpisodes', {
   somethingwentwrong: 'Something went wrong while retrieving season data.',
   noepisodes: 'Episode list unavailable.',
+  episoderequested: 'Requested',
 });
 
 interface SeasonEpisodesProps {
   tmdbId: number;
   seasonNumber: number;
   selected: number[];
+  requested?: number[];
   onToggle: (episodeNumber: number) => void;
 }
 
@@ -20,6 +22,7 @@ const SeasonEpisodes = ({
   tmdbId,
   seasonNumber,
   selected,
+  requested = [],
   onToggle,
 }: SeasonEpisodesProps) => {
   const intl = useIntl();
@@ -57,21 +60,32 @@ const SeasonEpisodes = ({
 
   return (
     <div className="flex flex-col gap-2 p-4">
-      {episodes.map((episode) => (
-        <label
-          key={`episode-${episode.id}`}
-          className="flex items-center gap-2 text-sm font-medium text-gray-100"
-        >
-          <input
-            type="checkbox"
-            checked={selected.includes(episode.episodeNumber)}
-            onChange={() => onToggle(episode.episodeNumber)}
-          />
-          <span>
-            {episode.episodeNumber}. {episode.name}
-          </span>
-        </label>
-      ))}
+      {episodes.map((episode) => {
+        const isRequested = requested.includes(episode.episodeNumber);
+        return (
+          <label
+            key={`episode-${episode.id}`}
+            className={`flex items-center gap-2 text-sm font-medium ${
+              isRequested ? 'cursor-not-allowed text-gray-400' : 'text-gray-100'
+            }`}
+          >
+            <input
+              type="checkbox"
+              checked={isRequested || selected.includes(episode.episodeNumber)}
+              disabled={isRequested}
+              onChange={() => onToggle(episode.episodeNumber)}
+            />
+            <span>
+              {episode.episodeNumber}. {episode.name}
+            </span>
+            {isRequested && (
+              <span className="text-xs font-semibold uppercase tracking-wider text-indigo-400">
+                {intl.formatMessage(messages.episoderequested)}
+              </span>
+            )}
+          </label>
+        );
+      })}
     </div>
   );
 };
