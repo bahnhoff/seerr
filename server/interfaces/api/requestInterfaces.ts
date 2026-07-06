@@ -18,6 +18,7 @@ export type MediaRequestBody = {
   mediaId: number;
   tvdbId?: number;
   seasons?: number[] | 'all';
+  episodes?: { seasonNumber: number; episodes: number[] }[];
   is4k?: boolean;
   serverId?: number;
   profileId?: number;

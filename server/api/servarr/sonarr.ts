@@ -1,3 +1,7 @@
+import {
+  resolveEpisodeIds,
+  type EpisodeTarget,
+} from '@server/lib/episodeRequests';
 import logger from '@server/logger';
 import ServarrBase from './base';
 
@@ -354,6 +358,25 @@ class SonarrAPI extends ServarrBase<{
     }
   }
 
+  public async searchEpisodes(episodeIds: number[]): Promise<void> {
+    if (episodeIds.length === 0) {
+      return;
+    }
+
+    try {
+      await this.runCommand('EpisodeSearch', { episodeIds });
+    } catch (e) {
+      logger.error(
+        'Something went wrong while executing Sonarr episode search.',
+        {
+          label: 'Sonarr API',
+          errorMessage: e.message,
+          episodeIds,
+        }
+      );
+    }
+  }
+
   public async getEpisodes(seriesId: number): Promise<EpisodeResult[]> {
     try {
       const response = await this.axios.get<EpisodeResult[]>('/episode', {
@@ -383,6 +406,52 @@ class SonarrAPI extends ServarrBase<{
         episodeIds,
       });
       throw new Error('Failed to monitor episodes', { cause: e });
+    }
+  }
+
+  // NOTE (v1 limitation): episode targets are joined to Sonarr episodes by
+  // (season, episode) number via `resolveEpisodeIds` (see
+  // `@server/lib/episodeRequests`). TMDB and Sonarr don't always agree on
+  // season/episode numbering for anime or other absolute-numbered series, so
+  // the join may fail to resolve some episodes for those series.
+  public async monitorAndSearchEpisodes(
+    seriesId: number,
+    targets: EpisodeTarget[],
+    retries = 6,
+    delayMs = 5000
+  ): Promise<void> {
+    if (targets.length === 0) {
+      return;
+    }
+
+    for (let attempt = 0; attempt < retries; attempt++) {
+      const episodes = await this.getEpisodes(seriesId);
+      const episodeIds = resolveEpisodeIds(episodes, targets);
+
+      if (episodeIds.length === targets.length) {
+        await this.monitorEpisodes(episodeIds);
+        await this.searchEpisodes(episodeIds);
+        return;
+      }
+
+      // Sonarr may not have refreshed episode metadata yet; wait and retry.
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+
+    // Final attempt: monitor/search whatever resolved, and warn about the rest.
+    const episodes = await this.getEpisodes(seriesId);
+    const episodeIds = resolveEpisodeIds(episodes, targets);
+    if (episodeIds.length > 0) {
+      await this.monitorEpisodes(episodeIds);
+      await this.searchEpisodes(episodeIds);
+    }
+    if (episodeIds.length < targets.length) {
+      logger.warn('Some requested episodes could not be resolved in Sonarr', {
+        label: 'Sonarr API',
+        seriesId,
+        requested: targets.length,
+        resolved: episodeIds.length,
+      });
     }
   }
 

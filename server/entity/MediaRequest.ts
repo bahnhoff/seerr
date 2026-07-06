@@ -28,6 +28,7 @@ import {
   RelationCount,
   UpdateDateColumn,
 } from 'typeorm';
+import EpisodeRequest from './EpisodeRequest';
 import Media from './Media';
 import SeasonRequest from './SeasonRequest';
 import { User } from './User';
@@ -149,7 +150,12 @@ export class MediaRequest {
         tmdbId: requestBody.mediaId,
         mediaType: requestBody.mediaType,
       },
-      relations: ['requests'],
+      // `seasons` and `episodes` are marked `eager: true` on their entities,
+      // but TypeORM does not always cascade eager relations three levels
+      // deep (media -> requests -> seasons -> episodes) on its own, so we
+      // request them explicitly to make sure existing episode requests are
+      // actually available for the dedup logic below.
+      relations: { requests: { seasons: { episodes: true } } },
     });
 
     if (!media) {
@@ -419,7 +425,7 @@ export class MediaRequest {
           ? tmdbMediaShow.seasons
               .filter((season) => season.season_number !== 0)
               .map((season) => season.season_number)
-          : (requestBody.seasons as number[]);
+          : ((requestBody.seasons as number[]) ?? []);
       if (!settings.main.enableSpecialEpisodes) {
         requestedSeasons = requestedSeasons.filter((sn) => sn > 0);
       }
@@ -466,12 +472,140 @@ export class MediaRequest {
         (rs) => !existingSeasons.includes(rs)
       );
 
-      if (finalSeasons.length === 0) {
+      // Episode-level requests need more granular de-duping than the
+      // whole-season path above. `existingSeasons` lumps together whole-season
+      // requests, episode-partial requests, and merely-partially-available
+      // seasons - which is correct for blocking a duplicate whole-season
+      // request, but far too coarse for episodes: a season that only has a
+      // prior partial request (e.g. episode 5) must still accept new,
+      // distinct episodes (e.g. episode 7).
+      //
+      // A season is only "fully covered" - and therefore should reject any
+      // new episode selections outright - when it has an existing
+      // whole-season request, or it's already fully available (not merely
+      // partially available/pending) per `media.seasons`.
+      const fullyRequestedSeasons = new Set<number>();
+      const requestedEpisodesBySeason = new Map<number, Set<number>>();
+
+      if (media.requests) {
+        media.requests
+          .filter(
+            (request) =>
+              request.is4k === requestBody.is4k &&
+              request.status !== MediaRequestStatus.DECLINED &&
+              request.status !== MediaRequestStatus.COMPLETED
+          )
+          .forEach((request) => {
+            request.seasons.forEach((season) => {
+              if (!season.episodes || season.episodes.length === 0) {
+                // A whole-season request has no episodes and fully covers
+                // the season.
+                fullyRequestedSeasons.add(season.seasonNumber);
+                return;
+              }
+
+              const episodeNumbers =
+                requestedEpisodesBySeason.get(season.seasonNumber) ??
+                new Set<number>();
+
+              season.episodes.forEach((episode) => {
+                episodeNumbers.add(episode.episodeNumber);
+              });
+
+              requestedEpisodesBySeason.set(
+                season.seasonNumber,
+                episodeNumbers
+              );
+            });
+          });
+      }
+
+      const fullyCoveredSeasons = new Set<number>(fullyRequestedSeasons);
+
+      if (media.seasons) {
+        media.seasons
+          .filter(
+            (season) =>
+              season[requestBody.is4k ? 'status4k' : 'status'] ===
+              MediaStatus.AVAILABLE
+          )
+          .forEach((season) => fullyCoveredSeasons.add(season.seasonNumber));
+      }
+
+      // Episode-level requests (parallel to whole-season `seasons`).
+      // Mirror the whole-season handling above for disabling specials, but
+      // use the granular `fullyCoveredSeasons`/`requestedEpisodesBySeason`
+      // computed above instead of the coarse `existingSeasons` list, then
+      // drop any individual episode numbers that are already requested.
+      const episodeSeasonRequests = (requestBody.episodes ?? [])
+        .filter((sel) => sel.episodes.length > 0)
+        .filter(
+          (sel) => settings.main.enableSpecialEpisodes || sel.seasonNumber > 0
+        )
+        .filter((sel) => !fullyCoveredSeasons.has(sel.seasonNumber))
+        .map((sel) => {
+          const alreadyRequestedEpisodes =
+            requestedEpisodesBySeason.get(sel.seasonNumber) ??
+            new Set<number>();
+
+          return {
+            ...sel,
+            episodes: sel.episodes.filter(
+              (episodeNumber) => !alreadyRequestedEpisodes.has(episodeNumber)
+            ),
+          };
+        })
+        .filter((sel) => sel.episodes.length > 0)
+        .map(
+          (sel) =>
+            new SeasonRequest({
+              seasonNumber: sel.seasonNumber,
+              status: user.hasPermission(
+                [
+                  requestBody.is4k
+                    ? Permission.AUTO_APPROVE_4K
+                    : Permission.AUTO_APPROVE,
+                  requestBody.is4k
+                    ? Permission.AUTO_APPROVE_4K_TV
+                    : Permission.AUTO_APPROVE_TV,
+                  Permission.MANAGE_REQUESTS,
+                ],
+                { type: 'or' }
+              )
+                ? MediaRequestStatus.APPROVED
+                : MediaRequestStatus.PENDING,
+              episodes: sel.episodes.map(
+                (episodeNumber) =>
+                  new EpisodeRequest({
+                    episodeNumber,
+                    status: user.hasPermission(
+                      [
+                        requestBody.is4k
+                          ? Permission.AUTO_APPROVE_4K
+                          : Permission.AUTO_APPROVE,
+                        requestBody.is4k
+                          ? Permission.AUTO_APPROVE_4K_TV
+                          : Permission.AUTO_APPROVE_TV,
+                        Permission.MANAGE_REQUESTS,
+                      ],
+                      { type: 'or' }
+                    )
+                      ? MediaRequestStatus.APPROVED
+                      : MediaRequestStatus.PENDING,
+                  })
+              ),
+            })
+        );
+
+      if (finalSeasons.length === 0 && episodeSeasonRequests.length === 0) {
         throw new NoSeasonsAvailableError('No seasons available to request');
       } else if (
         !ignoreQuota &&
         quotas.tv.limit &&
-        finalSeasons.length > (quotas.tv.remaining ?? 0)
+        // Each episode-partial season counts as one request, same as a
+        // whole-season request, for quota purposes.
+        finalSeasons.length + episodeSeasonRequests.length >
+          (quotas.tv.remaining ?? 0)
       ) {
         throw new QuotaRestrictedError('Series Quota exceeded.');
       }
@@ -517,26 +651,29 @@ export class MediaRequest {
         rootFolder: rootFolder,
         languageProfileId: requestBody.languageProfileId,
         tags: tags,
-        seasons: finalSeasons.map(
-          (sn) =>
-            new SeasonRequest({
-              seasonNumber: sn,
-              status: user.hasPermission(
-                [
-                  requestBody.is4k
-                    ? Permission.AUTO_APPROVE_4K
-                    : Permission.AUTO_APPROVE,
-                  requestBody.is4k
-                    ? Permission.AUTO_APPROVE_4K_TV
-                    : Permission.AUTO_APPROVE_TV,
-                  Permission.MANAGE_REQUESTS,
-                ],
-                { type: 'or' }
-              )
-                ? MediaRequestStatus.APPROVED
-                : MediaRequestStatus.PENDING,
-            })
-        ),
+        seasons: [
+          ...finalSeasons.map(
+            (sn) =>
+              new SeasonRequest({
+                seasonNumber: sn,
+                status: user.hasPermission(
+                  [
+                    requestBody.is4k
+                      ? Permission.AUTO_APPROVE_4K
+                      : Permission.AUTO_APPROVE,
+                    requestBody.is4k
+                      ? Permission.AUTO_APPROVE_4K_TV
+                      : Permission.AUTO_APPROVE_TV,
+                    Permission.MANAGE_REQUESTS,
+                  ],
+                  { type: 'or' }
+                )
+                  ? MediaRequestStatus.APPROVED
+                  : MediaRequestStatus.PENDING,
+              })
+          ),
+          ...episodeSeasonRequests,
+        ],
         isAutoRequest: options.isAutoRequest ?? false,
         ignoreQuota,
       });

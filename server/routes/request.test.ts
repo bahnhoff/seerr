@@ -1,14 +1,18 @@
 import assert from 'node:assert/strict';
 import { before, beforeEach, describe, it, mock } from 'node:test';
 
+import TheMovieDb from '@server/api/themoviedb';
+import type { TmdbTvDetails } from '@server/api/themoviedb/interfaces';
 import {
   MediaRequestStatus,
   MediaStatus,
   MediaType,
 } from '@server/constants/media';
 import { getRepository } from '@server/datasource';
+import EpisodeRequest from '@server/entity/EpisodeRequest';
 import Media from '@server/entity/Media';
 import { MediaRequest } from '@server/entity/MediaRequest';
+import SeasonRequest from '@server/entity/SeasonRequest';
 import { User } from '@server/entity/User';
 import { getSettings } from '@server/lib/settings';
 import { checkUser } from '@server/middleware/auth';
@@ -25,6 +29,63 @@ const sendNotificationMock = mock.method(
   'sendNotification',
   async () => undefined
 ).mock;
+
+// --- Mock TheMovieDb ---
+// `MediaRequest.request()` always fetches the TMDB show details for TV
+// requests, even when no `seasons` are requested (episode-only requests).
+function fakeTmdbTvShow(tmdbId: number): TmdbTvDetails {
+  return {
+    id: tmdbId,
+    content_ratings: { results: [] },
+    created_by: [],
+    episode_run_time: [],
+    first_air_date: '2024-01-01',
+    genres: [],
+    homepage: '',
+    in_production: false,
+    languages: ['en'],
+    last_air_date: '2024-01-01',
+    name: 'Test Show',
+    networks: [],
+    number_of_episodes: 10,
+    number_of_seasons: 1,
+    origin_country: ['US'],
+    original_language: 'en',
+    original_name: 'Test Show',
+    overview: '',
+    popularity: 0,
+    production_companies: [],
+    production_countries: [],
+    spoken_languages: [],
+    seasons: [
+      {
+        id: 1,
+        air_date: '2024-01-01',
+        episode_count: 10,
+        name: 'Season 1',
+        overview: '',
+        season_number: 1,
+      },
+    ],
+    status: 'Ended',
+    type: 'Scripted',
+    vote_average: 0,
+    vote_count: 0,
+    aggregate_credits: { cast: [] },
+    credits: { crew: [] },
+    external_ids: {},
+    keywords: { results: [] },
+    videos: { results: [] },
+  };
+}
+
+Object.defineProperty(TheMovieDb.prototype, 'getTvShow', {
+  get() {
+    return async ({ tvId }: { tvId: number }) => fakeTmdbTvShow(tvId);
+  },
+  set() {},
+  configurable: true,
+});
 
 let app: Express;
 
@@ -263,6 +324,241 @@ describe('POST /request/:requestId/retry', () => {
     assert.strictEqual(persisted.status, MediaRequestStatus.APPROVED);
     assert.strictEqual(persisted.modifiedBy?.email, 'admin@seerr.dev');
     assert.ok(persisted.updatedAt > failed.updatedAt);
+  });
+});
+
+describe('POST /request', () => {
+  it('creates episode-level season requests from body.episodes', async () => {
+    const agent = await loginAs('admin@seerr.dev', 'test1234');
+    const tmdbId = 70001;
+
+    const res = await agent
+      .post('/request')
+      .send({
+        mediaType: 'tv',
+        mediaId: tmdbId,
+        episodes: [{ seasonNumber: 1, episodes: [5] }],
+      })
+      .expect(201);
+
+    const created = await getRepository(MediaRequest).findOneOrFail({
+      where: { id: res.body.id },
+      relations: { seasons: { episodes: true } },
+    });
+    assert.equal(created.seasons.length, 1);
+    assert.equal(created.seasons[0].seasonNumber, 1);
+    assert.equal(created.seasons[0].episodes.length, 1);
+    assert.equal(created.seasons[0].episodes[0].episodeNumber, 5);
+  });
+
+  it('skips an episode-partial season that is already fully requested', async () => {
+    const userRepo = getRepository(User);
+    const mediaRepo = getRepository(Media);
+    const requestRepo = getRepository(MediaRequest);
+    const seasonRequestRepo = getRepository(SeasonRequest);
+
+    const admin = await userRepo.findOneOrFail({
+      where: { email: 'admin@seerr.dev' },
+    });
+    const tmdbId = 70002;
+
+    const media = await mediaRepo.save(
+      new Media({
+        mediaType: MediaType.TV,
+        tmdbId,
+        status: MediaStatus.PENDING,
+        status4k: MediaStatus.UNKNOWN,
+      })
+    );
+
+    // Season 1 is already fully (whole-season) requested for this media.
+    await requestRepo.save(
+      new MediaRequest({
+        type: MediaType.TV,
+        status: MediaRequestStatus.PENDING,
+        media,
+        requestedBy: admin,
+        is4k: false,
+        seasons: [
+          new SeasonRequest({
+            seasonNumber: 1,
+            status: MediaRequestStatus.PENDING,
+          }),
+        ],
+      })
+    );
+
+    const agent = await loginAs('admin@seerr.dev', 'test1234');
+
+    // Request episodes for the already-requested season 1 AND a fresh
+    // season 2 in the same call.
+    const res = await agent
+      .post('/request')
+      .send({
+        mediaType: 'tv',
+        mediaId: tmdbId,
+        is4k: false,
+        episodes: [
+          { seasonNumber: 1, episodes: [5] },
+          { seasonNumber: 2, episodes: [1] },
+        ],
+      })
+      .expect(201);
+
+    const created = await requestRepo.findOneOrFail({
+      where: { id: res.body.id },
+      relations: { seasons: { episodes: true } },
+    });
+
+    // Only season 2 gets an episode-partial SeasonRequest; season 1 is
+    // skipped because it's already fully requested.
+    assert.equal(created.seasons.length, 1);
+    assert.equal(created.seasons[0].seasonNumber, 2);
+
+    // No duplicate SeasonRequest row was created for season 1 - only the
+    // original whole-season row exists for it, across all requests on this
+    // media.
+    const seasonOneRows = await seasonRequestRepo.find({
+      where: { seasonNumber: 1, request: { media: { id: media.id } } },
+      relations: { request: true },
+    });
+    assert.equal(seasonOneRows.length, 1);
+  });
+
+  it('creates a new episode-partial request for a season that only has a prior, different episode requested (regression guard)', async () => {
+    const userRepo = getRepository(User);
+    const mediaRepo = getRepository(Media);
+    const requestRepo = getRepository(MediaRequest);
+
+    const admin = await userRepo.findOneOrFail({
+      where: { email: 'admin@seerr.dev' },
+    });
+    const tmdbId = 70003;
+
+    const media = await mediaRepo.save(
+      new Media({
+        mediaType: MediaType.TV,
+        tmdbId,
+        status: MediaStatus.PENDING,
+        status4k: MediaStatus.UNKNOWN,
+      })
+    );
+
+    // Season 1 already has a PARTIAL (episode-level) request for episode 5
+    // only - it is NOT a whole-season request and season 1 is not fully
+    // available.
+    await requestRepo.save(
+      new MediaRequest({
+        type: MediaType.TV,
+        status: MediaRequestStatus.PENDING,
+        media,
+        requestedBy: admin,
+        is4k: false,
+        seasons: [
+          new SeasonRequest({
+            seasonNumber: 1,
+            status: MediaRequestStatus.PENDING,
+            episodes: [
+              new EpisodeRequest({
+                episodeNumber: 5,
+                status: MediaRequestStatus.PENDING,
+              }),
+            ],
+          }),
+        ],
+      })
+    );
+
+    const agent = await loginAs('admin@seerr.dev', 'test1234');
+
+    // Requesting a DIFFERENT episode (7) of the same season must succeed -
+    // season 1 is only partially requested, not fully covered.
+    const res = await agent
+      .post('/request')
+      .send({
+        mediaType: 'tv',
+        mediaId: tmdbId,
+        is4k: false,
+        episodes: [{ seasonNumber: 1, episodes: [7] }],
+      })
+      .expect(201);
+
+    const created = await requestRepo.findOneOrFail({
+      where: { id: res.body.id },
+      relations: { seasons: { episodes: true } },
+    });
+
+    assert.equal(created.seasons.length, 1);
+    assert.equal(created.seasons[0].seasonNumber, 1);
+    assert.equal(created.seasons[0].episodes.length, 1);
+    assert.equal(created.seasons[0].episodes[0].episodeNumber, 7);
+  });
+
+  it('dedups only the specific already-requested episode numbers, not the whole season', async () => {
+    const userRepo = getRepository(User);
+    const mediaRepo = getRepository(Media);
+    const requestRepo = getRepository(MediaRequest);
+
+    const admin = await userRepo.findOneOrFail({
+      where: { email: 'admin@seerr.dev' },
+    });
+    const tmdbId = 70004;
+
+    const media = await mediaRepo.save(
+      new Media({
+        mediaType: MediaType.TV,
+        tmdbId,
+        status: MediaStatus.PENDING,
+        status4k: MediaStatus.UNKNOWN,
+      })
+    );
+
+    // Season 1 already has a PARTIAL request for episode 5.
+    await requestRepo.save(
+      new MediaRequest({
+        type: MediaType.TV,
+        status: MediaRequestStatus.PENDING,
+        media,
+        requestedBy: admin,
+        is4k: false,
+        seasons: [
+          new SeasonRequest({
+            seasonNumber: 1,
+            status: MediaRequestStatus.PENDING,
+            episodes: [
+              new EpisodeRequest({
+                episodeNumber: 5,
+                status: MediaRequestStatus.PENDING,
+              }),
+            ],
+          }),
+        ],
+      })
+    );
+
+    const agent = await loginAs('admin@seerr.dev', 'test1234');
+
+    // Request episodes 5 (duplicate) and 8 (new) together - the request
+    // must not be rejected, and only episode 8 should be created.
+    const res = await agent
+      .post('/request')
+      .send({
+        mediaType: 'tv',
+        mediaId: tmdbId,
+        is4k: false,
+        episodes: [{ seasonNumber: 1, episodes: [5, 8] }],
+      })
+      .expect(201);
+
+    const created = await requestRepo.findOneOrFail({
+      where: { id: res.body.id },
+      relations: { seasons: { episodes: true } },
+    });
+
+    assert.equal(created.seasons.length, 1);
+    assert.equal(created.seasons[0].seasonNumber, 1);
+    assert.equal(created.seasons[0].episodes.length, 1);
+    assert.equal(created.seasons[0].episodes[0].episodeNumber, 8);
   });
 });
 

@@ -309,6 +309,41 @@ const TvDetails = ({ tv }: TvDetailsProps) => {
     return [...requestedSeasons, ...availableSeasons];
   };
 
+  // Seasons that only have episode-level (partial) requests and are not yet
+  // fully available. These are still "open" for further episode requests, so
+  // the show must not be treated as complete — otherwise the "Request More"
+  // button disappears and users cannot add additional episodes.
+  const getEpisodePartialSeasons = (is4k: boolean): number[] => {
+    const activeRequests = (data?.mediaInfo?.requests ?? []).filter(
+      (request) =>
+        request.is4k === is4k &&
+        request.status !== MediaRequestStatus.DECLINED &&
+        request.status !== MediaRequestStatus.COMPLETED
+    );
+    const wholeSeasonRequested = new Set<number>();
+    const episodeRequested = new Set<number>();
+    activeRequests.forEach((request) => {
+      request.seasons.forEach((seasonRequest) => {
+        if ((seasonRequest.episodes?.length ?? 0) > 0) {
+          episodeRequested.add(seasonRequest.seasonNumber);
+        } else {
+          wholeSeasonRequested.add(seasonRequest.seasonNumber);
+        }
+      });
+    });
+    return [...episodeRequested].filter((seasonNumber) => {
+      if (wholeSeasonRequested.has(seasonNumber)) {
+        return false;
+      }
+      const mediaSeason = data?.mediaInfo?.seasons?.find(
+        (season) => season.seasonNumber === seasonNumber
+      );
+      return (
+        mediaSeason?.[is4k ? 'status4k' : 'status'] !== MediaStatus.AVAILABLE
+      );
+    });
+  };
+
   const showHasSpecials = data.seasons.some(
     (season) =>
       season.seasonNumber === 0 &&
@@ -317,11 +352,13 @@ const TvDetails = ({ tv }: TvDetailsProps) => {
 
   const isComplete =
     (showHasSpecials ? seasonCount + 1 : seasonCount) <=
-    getAllRequestedSeasons(false).length;
+      getAllRequestedSeasons(false).length &&
+    getEpisodePartialSeasons(false).length === 0;
 
   const is4kComplete =
     (showHasSpecials ? seasonCount + 1 : seasonCount) <=
-    getAllRequestedSeasons(true).length;
+      getAllRequestedSeasons(true).length &&
+    getEpisodePartialSeasons(true).length === 0;
 
   const streamingRegion = user?.settings?.streamingRegion
     ? user.settings.streamingRegion
