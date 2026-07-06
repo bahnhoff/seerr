@@ -362,7 +362,19 @@ class SonarrAPI extends ServarrBase<{
     if (episodeIds.length === 0) {
       return;
     }
-    await this.runCommand('EpisodeSearch', { episodeIds });
+
+    try {
+      await this.runCommand('EpisodeSearch', { episodeIds });
+    } catch (e) {
+      logger.error(
+        'Something went wrong while executing Sonarr episode search.',
+        {
+          label: 'Sonarr API',
+          errorMessage: e.message,
+          episodeIds,
+        }
+      );
+    }
   }
 
   public async getEpisodes(seriesId: number): Promise<EpisodeResult[]> {
@@ -397,6 +409,11 @@ class SonarrAPI extends ServarrBase<{
     }
   }
 
+  // NOTE (v1 limitation): episode targets are joined to Sonarr episodes by
+  // (season, episode) number via `resolveEpisodeIds` (see
+  // `@server/lib/episodeRequests`). TMDB and Sonarr don't always agree on
+  // season/episode numbering for anime or other absolute-numbered series, so
+  // the join may fail to resolve some episodes for those series.
   public async monitorAndSearchEpisodes(
     seriesId: number,
     targets: EpisodeTarget[],
@@ -430,7 +447,7 @@ class SonarrAPI extends ServarrBase<{
     }
     if (episodeIds.length < targets.length) {
       logger.warn('Some requested episodes could not be resolved in Sonarr', {
-        label: 'Sonarr',
+        label: 'Sonarr API',
         seriesId,
         requested: targets.length,
         resolved: episodeIds.length,
