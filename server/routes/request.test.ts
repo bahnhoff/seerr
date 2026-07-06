@@ -9,6 +9,7 @@ import {
   MediaType,
 } from '@server/constants/media';
 import { getRepository } from '@server/datasource';
+import EpisodeRequest from '@server/entity/EpisodeRequest';
 import Media from '@server/entity/Media';
 import { MediaRequest } from '@server/entity/MediaRequest';
 import SeasonRequest from '@server/entity/SeasonRequest';
@@ -422,6 +423,142 @@ describe('POST /request', () => {
       relations: { request: true },
     });
     assert.equal(seasonOneRows.length, 1);
+  });
+
+  it('creates a new episode-partial request for a season that only has a prior, different episode requested (regression guard)', async () => {
+    const userRepo = getRepository(User);
+    const mediaRepo = getRepository(Media);
+    const requestRepo = getRepository(MediaRequest);
+
+    const admin = await userRepo.findOneOrFail({
+      where: { email: 'admin@seerr.dev' },
+    });
+    const tmdbId = 70003;
+
+    const media = await mediaRepo.save(
+      new Media({
+        mediaType: MediaType.TV,
+        tmdbId,
+        status: MediaStatus.PENDING,
+        status4k: MediaStatus.UNKNOWN,
+      })
+    );
+
+    // Season 1 already has a PARTIAL (episode-level) request for episode 5
+    // only - it is NOT a whole-season request and season 1 is not fully
+    // available.
+    await requestRepo.save(
+      new MediaRequest({
+        type: MediaType.TV,
+        status: MediaRequestStatus.PENDING,
+        media,
+        requestedBy: admin,
+        is4k: false,
+        seasons: [
+          new SeasonRequest({
+            seasonNumber: 1,
+            status: MediaRequestStatus.PENDING,
+            episodes: [
+              new EpisodeRequest({
+                episodeNumber: 5,
+                status: MediaRequestStatus.PENDING,
+              }),
+            ],
+          }),
+        ],
+      })
+    );
+
+    const agent = await loginAs('admin@seerr.dev', 'test1234');
+
+    // Requesting a DIFFERENT episode (7) of the same season must succeed -
+    // season 1 is only partially requested, not fully covered.
+    const res = await agent
+      .post('/request')
+      .send({
+        mediaType: 'tv',
+        mediaId: tmdbId,
+        is4k: false,
+        episodes: [{ seasonNumber: 1, episodes: [7] }],
+      })
+      .expect(201);
+
+    const created = await requestRepo.findOneOrFail({
+      where: { id: res.body.id },
+      relations: { seasons: { episodes: true } },
+    });
+
+    assert.equal(created.seasons.length, 1);
+    assert.equal(created.seasons[0].seasonNumber, 1);
+    assert.equal(created.seasons[0].episodes.length, 1);
+    assert.equal(created.seasons[0].episodes[0].episodeNumber, 7);
+  });
+
+  it('dedups only the specific already-requested episode numbers, not the whole season', async () => {
+    const userRepo = getRepository(User);
+    const mediaRepo = getRepository(Media);
+    const requestRepo = getRepository(MediaRequest);
+
+    const admin = await userRepo.findOneOrFail({
+      where: { email: 'admin@seerr.dev' },
+    });
+    const tmdbId = 70004;
+
+    const media = await mediaRepo.save(
+      new Media({
+        mediaType: MediaType.TV,
+        tmdbId,
+        status: MediaStatus.PENDING,
+        status4k: MediaStatus.UNKNOWN,
+      })
+    );
+
+    // Season 1 already has a PARTIAL request for episode 5.
+    await requestRepo.save(
+      new MediaRequest({
+        type: MediaType.TV,
+        status: MediaRequestStatus.PENDING,
+        media,
+        requestedBy: admin,
+        is4k: false,
+        seasons: [
+          new SeasonRequest({
+            seasonNumber: 1,
+            status: MediaRequestStatus.PENDING,
+            episodes: [
+              new EpisodeRequest({
+                episodeNumber: 5,
+                status: MediaRequestStatus.PENDING,
+              }),
+            ],
+          }),
+        ],
+      })
+    );
+
+    const agent = await loginAs('admin@seerr.dev', 'test1234');
+
+    // Request episodes 5 (duplicate) and 8 (new) together - the request
+    // must not be rejected, and only episode 8 should be created.
+    const res = await agent
+      .post('/request')
+      .send({
+        mediaType: 'tv',
+        mediaId: tmdbId,
+        is4k: false,
+        episodes: [{ seasonNumber: 1, episodes: [5, 8] }],
+      })
+      .expect(201);
+
+    const created = await requestRepo.findOneOrFail({
+      where: { id: res.body.id },
+      relations: { seasons: { episodes: true } },
+    });
+
+    assert.equal(created.seasons.length, 1);
+    assert.equal(created.seasons[0].seasonNumber, 1);
+    assert.equal(created.seasons[0].episodes.length, 1);
+    assert.equal(created.seasons[0].episodes[0].episodeNumber, 8);
   });
 });
 
